@@ -4,12 +4,37 @@ source $OPENSHIFT_CARTRIDGE_SDK_BASH
 
 HTTPD_CFG_FILE=$OPENSHIFT_PHP_DIR/configuration/etc/conf/httpd_nolog.conf
 HTTPD_CFG_DIR=$OPENSHIFT_PHP_DIR/configuration/etc/conf.d
+HTTPD_PASSENV_FILE=$HTTPD_CFG_DIR/passenv.conf
+HTTPD_PID_FILE=$OPENSHIFT_PHP_DIR/run/httpd.pid
 
 function apache() {
-    client_message "$2 Apache+mod_php HTTPD server"
-    [ "$1" != "stop" ] && update_httpd_passenv $HTTPD_CFG_FILE
+    if [ "$1" != "stop" ]; then
+      write_httpd_passenv $HTTPD_PASSENV_FILE
+      oo-erb ${OPENSHIFT_PHP_DIR}conf/performance.conf.erb.hidden > $HTTPD_CFG_DIR/performance.conf
+    fi
+    ensure_valid_httpd_process "$HTTPD_PID_FILE" "$HTTPD_CFG_FILE"
     /usr/sbin/httpd -C "Include $HTTPD_CFG_DIR/*.conf" -f $HTTPD_CFG_FILE -k $1
+    ret=$?
+    [ "$ret" == "0" -a "$1" == "start" ] && wait_for_pid_file $HTTPD_PID_FILE
+    return $ret
+}
+
+function restart() {
+    write_httpd_passenv $HTTPD_PASSENV_FILE
+    oo-erb ${OPENSHIFT_PHP_DIR}conf/performance.conf.erb.hidden > $HTTPD_CFG_DIR/performance.conf
+    ensure_valid_httpd_process "$HTTPD_PID_FILE" "$HTTPD_CFG_FILE"
+    ensure_httpd_restart_succeed "$HTTPD_PID_FILE" "$HTTPD_CFG_FILE"
+    /usr/sbin/httpd -C "Include $HTTPD_CFG_DIR/*.conf" -f $HTTPD_CFG_FILE -k restart
     return $?
+}
+
+function stop() {
+    ensure_valid_httpd_process "$HTTPD_PID_FILE" "$HTTPD_CFG_FILE"
+    if [ -f "$HTTPD_PID_FILE" ]; then
+        httpd_pid=`cat "$HTTPD_PID_FILE" 2> /dev/null`
+    fi
+    /usr/sbin/httpd -C "Include $HTTPD_CFG_DIR/*.conf" -f $HTTPD_CFG_FILE -k stop
+    wait_for_stop $httpd_pid
 }
 
 function configtest() {
@@ -40,11 +65,10 @@ function tidy() {
 }
 
 function build() {
-    if [ -f "${OPENSHIFT_REPO_DIR}/.openshift/markers/force_clean_build" ]
-    then
-        echo ".openshift/markers/force_clean_build found!  Recreating pear libs" 1>&2
-        rm -rf "${OPENSHIFT_PHP_DIR}"/phplib/pear/*
-        mkdir -p "${OPENSHIFT_PHP_DIR}"/phplib/pear/{docs,ext,php,cache,cfg,data,download,temp,tests,www}
+    echo "Building PHP cartridge"
+    if force_clean_build_enabled_for_latest_deployment; then
+      echo "force_clean_build enabled - recreating pear libs" 1>&2
+      mkdir -p "${OPENSHIFT_PHP_DIR}"/phplib/pear/{docs,ext,php,cache,cfg,data,download,temp,tests,www}
     fi
 
     if [ -f ${OPENSHIFT_REPO_DIR}deplist.txt ]
@@ -62,22 +86,24 @@ function build() {
             else
                 echo "Extension already installed in the system: $f"
             fi
+            # Remove gear-specific absolute paths from the generated PEAR files
+            find ${OPENSHIFT_PHP_DIR}phplib/pear/pear/ -type f ! -name '.*' -exec sed -i "s|${OPENSHIFT_HOMEDIR}|~/|g" {} \;
         done
     fi
     return 0
 }
 
 case "$1" in
-  start)           apache start "Starting" ;;
-  stop)            apache stop "Stopping" ;;
-  restart)         apache restart "Restarting" ;;
-  reload|graceful) apache graceful "Restarting gracefully" ;;
+  start)           echo "Starting PHP cartridge";   apache start ;;
+  stop)            echo "Stopping PHP cartridge";   stop ;;
+  restart)         echo "Restarting PHP cartridge"; restart ;;
+  reload|graceful) echo "Reloading PHP cartridge";  apache graceful ;;
   status)          status ;;
   configtest)      configtest ;;
   tidy)            tidy ;;
   build)           build ;;
   deploy)          exit 0 ;; # Nothing to deploy on template PHP cartridge
-  *)               client_message "\`$1' control action not implemented"; exit 0
+  *)               exit 0
 esac
 
 exit $?
