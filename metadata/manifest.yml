@@ -12,7 +12,7 @@ Vendor: php.net
 Cartridge-Version: 0.0.8
 Compatible-Versions:
 - 0.0.7
-Cartridge-Vendor: nwei
+Cartridge-Vendor: 23_nwei
 Categories:
 - service
 - php
